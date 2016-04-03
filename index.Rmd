@@ -7,20 +7,138 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+set.seed(9991)
+```
+
+```{r, echo=FALSE, results='hide', warning=FALSE, message=FALSE}
+library(caret)
 ```
 
 ## Executive Summary
 One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. The goal of this report is to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants to predict the manner in which they performed the exercise (i.e. the quality of execution). 
 
-This report utilises machine learning algorithms (specifically random forests, generalized boosted regression and linear discriminant analysis) to predict the class of an activity (i.e. whether it is performed correctly or involved a common error).
+This report utilises machine learning algorithms (specifically random forests, generalized boosted regression and classification trees) to predict the class of an activity (i.e. whether it is performed correctly or involved a common error).
 
 ## Data Processing
 
-Load the data into separate training and testing datasets
+Load the data into separate training and testing datasets to enable cross-validation through the use of data partitioning (this will be further split after basic data processing has been completed).
 
 ```{r}
-training <- read.csv("pml-training.csv")
+trainingRaw <- read.csv("pml-training.csv")
 testing <- read.csv("pml-testing.csv")
+```
+
+Eliminate any variables that are irrelevant or considered near zero variance since this will unnecessarily complicate the model without adding any predictive value.
+
+```{r}
+trainingRaw <- trainingRaw[,6:ncol(trainingRaw)]
+testing  <- testing[,6:ncol(testing)]
+
+#remove columns with missing values
+nonmissing <- colSums(is.na(trainingRaw)) == 0
+trainingRaw <- trainingRaw[, nonmissing] 
+testing <- testing[, nonmissing] 
+
+#remove near zero variance variables
+nzv <- nearZeroVar(trainingRaw[,-which(names(trainingRaw) == "classe")])
+trainingRaw <- trainingRaw[,-nzv]
+testing <- testing[,-nzv]
+```
+
+Apply the same classes to the data in training and test datasets so that the same procedures can be run on the variables.
+
+```{r}
+for(i in 7:ncol(trainingRaw)-1) {
+  testing[,i] <- as.numeric(testing[,i])
+  trainingRaw[,i] <- as.numeric(trainingRaw[,i])
+}
+```
+
+
+Further split the training data into a training set and validation set to enable the accurate estimation of out of sample error.
+```{r}
+inTrain <- createDataPartition(trainingRaw$classe, p=0.8, list=FALSE)
+training <- trainingRaw[inTrain,]
+validation <- trainingRaw[-inTrain,]
+```
+
+## Model Building
+
+Three different types of models are used in this prediction algorithm, namely random forest, boosted regression and classification trees. These predictors are stacked using a random forest model to produce a combined model with a greater predictive ability.
+
+```{r, cache=TRUE, message=FALSE, warning=FALSE, results='hide'}
+library(caret)
+#build random forest model
+trCtrl <- trainControl("cv", number=2)
+rfmodel <- train(classe ~ ., method="rf", data=training, trControl=trCtrl, preProcess="knnImpute")
+
+#build boosted regression model
+gbmodel <- train(classe ~ ., method="gbm", data=training, trControl=trCtrl, verbose=FALSE)
+
+#build classification tree model
+treemodel <- train(classe ~., method="rpart", trControl=trCtrl, data=training)
+```
+
+These individual predictors will be combined to create a stacked model which will have greater accuracy than each predictor on its own.
+
+
+## Cross Validation
+
+In order to accurately estimate the (out of sample) error rate, data that were not used to build the model must be used. Cross validation involves using different data to test the model as opposed to the data that were used to create the model. This is in addition to the cross validation which was used to create the models which involved 2-fold cross validation via the `trControl` parameter in the model building section above.
+
+```{r}
+#predict using each model
+rfpred <- predict(rfmodel, validation)
+gbpred <- predict(gbmodel, validation)
+treepred <- predict(treemodel, validation)
+
+#combine the predictors into a new model
+predDF <- data.frame(rfpred, gbpred, treepred, classe=validation$classe)
+combinedmodel <- train(classe ~ ., method="rf", data=predDF, trControl = trCtrl)
+
+#predict using the stacked model
+combinedpred <- predict(combinedmodel, validation)
+```
+
+The out of sample error for each of the models can be estimated using the accuracy and kappa statistics.
+
+Combined model
+```{r}
+postResample(combinedpred, validation$classe)
+```
+
+Random forest
+```{r}
+postResample(rfpred, validation$classe)
+```
+
+Boosted regression
+```{r}
+postResample(gbpred, validation$classe)
+```
+
+Recursive partitioning tree
+```{r}
+postResample(treepred, validation$classe)
+```
+
+## Applying to Test Data
+
+The combined model can be used for the `testing` dataset which does not have `classe` labels associated with it.
+
+```{r}
+#predict using each model
+rfpred <- predict(rfmodel, testing)
+gbpred <- predict(gbmodel, testing)
+treepred <- predict(treemodel, testing)
+
+#combine the predictors into a dataset
+predDF <- data.frame(rfpred, gbpred, treepred)
+
+#predict using the stacked model
+predict(combinedmodel, testing)
 ```
 
 ---

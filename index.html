@@ -119,13 +119,98 @@ $(document).ready(function () {
 <div id="executive-summary" class="section level2">
 <h2>Executive Summary</h2>
 <p>One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. The goal of this report is to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants to predict the manner in which they performed the exercise (i.e. the quality of execution).</p>
-<p>This report utilises machine learning algorithms (specifically random forests, generalized boosted regression and linear discriminant analysis) to predict the class of an activity (i.e. whether it is performed correctly or involved a common error).</p>
+<p>This report utilises machine learning algorithms (specifically random forests, generalized boosted regression and classification trees) to predict the class of an activity (i.e. whether it is performed correctly or involved a common error).</p>
 </div>
-<div id="section" class="section level2">
-<h2></h2>
-<p>Load the data into separate training and testing datasets</p>
-<pre class="r"><code>training &lt;- read.csv(&quot;pml-training.csv&quot;)
+<div id="data-processing" class="section level2">
+<h2>Data Processing</h2>
+<p>Load the data into separate training and testing datasets to enable cross-validation through the use of data partitioning (this will be further split after basic data processing has been completed).</p>
+<pre class="r"><code>trainingRaw &lt;- read.csv(&quot;pml-training.csv&quot;)
 testing &lt;- read.csv(&quot;pml-testing.csv&quot;)</code></pre>
+<p>Eliminate any variables that are irrelevant or considered near zero variance since this will unnecessarily complicate the model without adding any predictive value.</p>
+<pre class="r"><code>trainingRaw &lt;- trainingRaw[,6:ncol(trainingRaw)]
+testing  &lt;- testing[,6:ncol(testing)]
+
+#remove columns with missing values
+nonmissing &lt;- colSums(is.na(trainingRaw)) == 0
+trainingRaw &lt;- trainingRaw[, nonmissing] 
+testing &lt;- testing[, nonmissing] 
+
+#remove near zero variance variables
+nzv &lt;- nearZeroVar(trainingRaw[,-which(names(trainingRaw) == &quot;classe&quot;)])
+trainingRaw &lt;- trainingRaw[,-nzv]
+testing &lt;- testing[,-nzv]</code></pre>
+<p>Apply the same classes to the data in training and test datasets so that the same procedures can be run on the variables.</p>
+<pre class="r"><code>for(i in 7:ncol(trainingRaw)-1) {
+  testing[,i] &lt;- as.numeric(testing[,i])
+  trainingRaw[,i] &lt;- as.numeric(trainingRaw[,i])
+}</code></pre>
+<p>Further split the training data into a training set and validation set to enable the accurate estimation of out of sample error.</p>
+<pre class="r"><code>inTrain &lt;- createDataPartition(trainingRaw$classe, p=0.8, list=FALSE)
+training &lt;- trainingRaw[inTrain,]
+validation &lt;- trainingRaw[-inTrain,]</code></pre>
+</div>
+<div id="model-building" class="section level2">
+<h2>Model Building</h2>
+<p>Three different types of models are used in this prediction algorithm, namely random forest, boosted regression and classification trees. These predictors are stacked using a random forest model to produce a combined model with a greater predictive ability.</p>
+<pre class="r"><code>library(caret)
+#build random forest model
+trCtrl &lt;- trainControl(&quot;cv&quot;, number=2)
+rfmodel &lt;- train(classe ~ ., method=&quot;rf&quot;, data=training, trControl=trCtrl, preProcess=&quot;knnImpute&quot;)
+
+#build boosted regression model
+gbmodel &lt;- train(classe ~ ., method=&quot;gbm&quot;, data=training, trControl=trCtrl, verbose=FALSE)
+
+#build classification tree model
+treemodel &lt;- train(classe ~., method=&quot;rpart&quot;, trControl=trCtrl, data=training)</code></pre>
+<p>These individual predictors will be combined to create a stacked model which will have greater accuracy than each predictor on its own.</p>
+</div>
+<div id="cross-validation" class="section level2">
+<h2>Cross Validation</h2>
+<p>In order to accurately estimate the (out of sample) error rate, data that were not used to build the model must be used. Cross validation involves using different data to test the model as opposed to the data that were used to create the model. This is in addition to the cross validation which was used to create the models which involved 2-fold cross validation via the <code>trControl</code> parameter in the model building section above.</p>
+<pre class="r"><code>#predict using each model
+rfpred &lt;- predict(rfmodel, validation)
+gbpred &lt;- predict(gbmodel, validation)
+treepred &lt;- predict(treemodel, validation)
+
+#combine the predictors into a new model
+predDF &lt;- data.frame(rfpred, gbpred, treepred, classe=validation$classe)
+combinedmodel &lt;- train(classe ~ ., method=&quot;rf&quot;, data=predDF, trControl = trCtrl)
+
+#predict using the stacked model
+combinedpred &lt;- predict(combinedmodel, validation)</code></pre>
+<p>The out of sample error for each of the models can be estimated using the accuracy and kappa statistics.</p>
+<p>Combined model</p>
+<pre class="r"><code>postResample(combinedpred, validation$classe)</code></pre>
+<pre><code>##  Accuracy     Kappa 
+## 0.9992353 0.9990328</code></pre>
+<p>Random forest</p>
+<pre class="r"><code>postResample(rfpred, validation$classe)</code></pre>
+<pre><code>##  Accuracy     Kappa 
+## 0.9982157 0.9977431</code></pre>
+<p>Boosted regression</p>
+<pre class="r"><code>postResample(gbpred, validation$classe)</code></pre>
+<pre><code>##  Accuracy     Kappa 
+## 0.9880194 0.9848454</code></pre>
+<p>Recursive partitioning tree</p>
+<pre class="r"><code>postResample(treepred, validation$classe)</code></pre>
+<pre><code>##  Accuracy     Kappa 
+## 0.4812643 0.3210721</code></pre>
+</div>
+<div id="applying-to-test-data" class="section level2">
+<h2>Applying to Test Data</h2>
+<p>The combined model can be used for the <code>testing</code> dataset which does not have <code>classe</code> labels associated with it.</p>
+<pre class="r"><code>#predict using each model
+rfpred &lt;- predict(rfmodel, testing)
+gbpred &lt;- predict(gbmodel, testing)
+treepred &lt;- predict(treemodel, testing)
+
+#combine the predictors into a dataset
+predDF &lt;- data.frame(rfpred, gbpred, treepred)
+
+#predict using the stacked model
+predict(combinedmodel, testing)</code></pre>
+<pre><code>##  [1] B A B A A E D B A A B C B A E E A B B B
+## Levels: A B C D E</code></pre>
 <hr />
 <p>Reference: Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human ’13) . Stuttgart, Germany: ACM SIGCHI, 2013.</p>
 <p>Read more: <a href="http://groupware.les.inf.puc-rio.br/har#ixzz44lxKNFDx" class="uri">http://groupware.les.inf.puc-rio.br/har#ixzz44lxKNFDx</a></p>
